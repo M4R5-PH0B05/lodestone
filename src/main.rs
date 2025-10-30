@@ -1,13 +1,13 @@
 // PROJECT: **LODESTONE**
 // OUTLINE: A GUI-Based application which uses community driven selection to identify client and server-side-based MC mods. It will use 'modules' that can be loaded that will flag certain mods with tags.
-//          There will be a 'default' module, which will identify 'client' and 'server' side mods.
+//          There will be a 'default' modul e, which will identify 'client' and 'server' side mods.
 //          Custom modules could isolate dependencies for certain mods, mods for certain modpacks, common
 //          incompatibilities between mods, etc...
 //          All modules will be in JSON format.
 //          The module header will contain a name, creator and version.
 //          The content will be the mod id, e.g. 'create' and the type, e.g. 'client' or 'server'.
 //          The application will have multiple functions, however, the primary ones are:
-//              - A 'remove all' button of a certain tag, for example, to remove all client side mods.
+//             - A 'remove all' button of a certain tag, for example, to remove all client side mods.
 //              - A way to tag mods yourself, if a mod is not recognized by the current module.
 //              - There will then be a way to submit this to the module author, and they may choose to
 //                integrate it into the current module.
@@ -77,7 +77,22 @@ struct Module {
     module_author: String,
     mods: BTreeMap<String,Mod>
 }
+fn get_jar_files(dir_path: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut jar_files = Vec::new();
 
+    for entry in fs::read_dir(dir_path)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        // if path.extension().and_then(|s| s.to_str()) == Some("jar") {
+            if let Some(file_name) = path.file_name() {
+                jar_files.push(file_name.to_string_lossy().to_string());
+            // }
+        }
+    }
+
+    Ok(jar_files)
+}
 
 impl Module {
     fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -126,25 +141,31 @@ impl Module {
     }
 }
 
+
 fn main() {
     // Load the module from test.json
     match Module::from_file("test.json") {
         Ok(module) => {
-            // Print module information
-            module.print_info();
-
-            println!("\n--- Testing Lookups ---");
-
-            // Test individual mod lookup
-            if let Some(tag) = module.get_mod_type("mod2") {
-                println!("mod2 is: {:?}", tag);
-            }
-
-            // Get all client-side mods
-            let client_mods = module.get_mods_by_type(&DefaultTags::Client);
-            println!("\nClient-side mods:");
-            for mod_entry in client_mods {
-                println!("  {}", mod_entry.mod_id);
+            // // Print module information
+            // module.print_info();
+            //
+            // println!("\n--- Testing Lookups ---");
+            //
+            // // Test individual mod lookup
+            // if let Some(tag) = module.get_mod_type("mod2") {
+            //     println!("mod2 is: {:?}", tag);
+            // }
+            //
+            // // Get all client-side mods
+            // let client_mods = module.get_mods_by_type(&DefaultTags::Client);
+            // println!("\nClient-side mods:");
+            // for mod_entry in client_mods {
+            //     println!("{}", mod_entry.mod_id);
+            // }
+            // readDir();
+            let results = get_jar_files("/Users/morganbennett/Downloads");
+            for result in results {
+                println!("{:?}",result);
             }
         }
         Err(e) => {
