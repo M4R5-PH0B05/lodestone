@@ -1,24 +1,24 @@
 {
   "header": {
-    "moduleName": "Default",
-    "moduleVersion": 1,
-    "moduleAuthor": "mars_phobos"
+    "module_name": "Default",
+    "module_version": 1,
+    "module_author": "mars_phobos"
   },
   "mods": [
     {
-      "modID": "mod",
-      "modVersion": 1,
-      "modType": "Client"
+      "mod_id": "mod",
+      "mod_version": 1,
+      "mod_type": "Client"
     },
     {
-      "modID": "mod2",
-      "modVersion": 2,
-      "modType": "Server"
+      "mod_id": "mod2",
+      "mod_version": 2,
+      "mod_type": "Server"
     },
     {
-      "modID": "mod3",
-      "modVersion": 7.1,
-      "modType": "Both"
+      "mod_id": "mod3",
+      "mod_version": 7.1,
+      "mod_type": "Both"
     }
   ]
 }
