@@ -1,0 +1,57 @@
+# =========================================
+# Rust project ignores
+# =========================================
+
+# Compiled output
+/target/
+
+# Backup files created by Cargo
+**/*.rs.bk
+
+# Generated lock file (optional — keep if you want reproducible builds)
+# Cargo.lock
+
+# Rustfmt and Clippy outputs
+*.log
+
+# =========================================
+# IDE / Editor ignores
+# =========================================
+
+# RustRover / IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+out/
+
+# VSCode (if you ever open it there)
+.vscode/
+
+# =========================================
+# System / OS files
+# =========================================
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# =========================================
+# Miscellaneous
+# =========================================
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# =========================================
+# Optional: ignore local environment files
+# =========================================
+
+.env
+.env.*

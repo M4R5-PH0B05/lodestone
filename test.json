@@ -1,0 +1,24 @@
+{
+  "header": {
+    "moduleName": "Default",
+    "moduleVersion": 1,
+    "moduleAuthor": "mars_phobos"
+  },
+  "mods": [
+    {
+      "modID": "mod",
+      "modVersion": 1,
+      "modType": "Client"
+    },
+    {
+      "modID": "mod2",
+      "modVersion": 2,
+      "modType": "Server"
+    },
+    {
+      "modID": "mod3",
+      "modVersion": 7.1,
+      "modType": "Both"
+    }
+  ]
+}
