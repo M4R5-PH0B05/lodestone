@@ -1,7 +1,7 @@
 # Lodestone
 
 <p align="center">
-  <img src="icon.png" alt="Lodestone Icon" width="128" height="128">
+  <img src="lodestone.png" alt="Lodestone Icon" width="128" height="128">
 </p>
 
 <p align="center">
