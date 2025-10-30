@@ -97,7 +97,7 @@ Contributions are welcome! Whether it's:
 
 ## Author
 
-mars_phobos
+@mars_phobos
 
 ---
 
