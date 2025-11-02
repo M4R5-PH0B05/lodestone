@@ -38,24 +38,35 @@
 //               When a mod is found, an operation will be conducted.
 //
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, Read, Write};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum DefaultTags {
+    Unknown,
     Client,
     Server,
-    Both,
-    Unknown
+    Both
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum ModTypes {
+    Unknown,
+    Forge,
+    NeoForge,
+    Fabric,
+    Quilt
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Previously also had mod_id, but that is being used as the key
+// For the B-Tree storage solution, so the mod_id property
+// was removed to prevent data duplication
 struct Mod {
-    mod_id: String,
     mod_version: f64,
-    mod_type: DefaultTags
+    mod_tag: DefaultTags,
+    mod_type: ModTypes
 }
 #[derive(Debug, Deserialize)]
 struct ModuleHeader {
@@ -68,7 +79,7 @@ struct ModuleJson {
     header: ModuleHeader,
     // Previously a vector could be a hashmap, although mod ver would have to be removed.
     // I believe a B-Tree is optimal
-    mods: Vec<Mod>
+    mods: BTreeMap<String, Mod>
 }
 #[derive(Debug)]
 struct Module {
@@ -94,6 +105,37 @@ fn get_jar_files(dir_path: &str) -> Result<Vec<String>, Box<dyn std::error::Erro
     Ok(jar_files)
 }
 
+// Helper function to get mod ID and mod Type from the JAR file
+fn get_mod_id_and_type(path: &str) -> Result<(), Box<dyn std::error::Error>>{
+    // Open the file from the path
+    let file = std::fs::File::open(path)?;
+    // Unzip it (A jar file is basically a ZIP)
+    let mut archive = zip::ZipArchive::new(file)?;
+    // Iterate over the length and produce all file paths in the JAR directory
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let name = file.name();
+
+        if name.ends_with("mods.toml") {
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+            println!("Found Forge mods.toml: \n{}", contents);
+
+        } else if name.ends_with("fabric.mod.json") {
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+            println!("Found Fabric mods.json: \n{}", contents);
+
+        } else if name.ends_with("mcmod.info") {
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+            println!("Found ? \n{}", contents);
+
+        }
+    }
+    Ok(())
+}
+
 impl Module {
     fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let json_string = fs::read_to_string(path)?;
@@ -102,29 +144,25 @@ impl Module {
         Ok(Self::from_json(json_data))
     }
     fn from_json(json_data: ModuleJson) -> Self {
-        let mods: BTreeMap<String, Mod> = json_data.mods
-            .into_iter()
-            .map(|m| (m.mod_id.clone(), m))
-            .collect();
-
         Self {
             module_name: json_data.header.module_name,
             module_version: json_data.header.module_version,
             module_author: json_data.header.module_author,
-            mods,
+            mods: json_data.mods,
         }
     }
 
+
     // Get a mod by its ID
     fn get_mod_type(&self,mod_id: &str) -> Option<&DefaultTags> {
-        self.mods.get(mod_id).map(|m| &m.mod_type)
+        self.mods.get(mod_id).map(|m| &m.mod_tag)
     }
 
     // Get all mods with a certain Tag
     fn get_mods_by_type(&self, tag: &DefaultTags) -> Vec<&Mod> {
         self.mods
             .values()
-            .filter(|m| matches!(&m.mod_type, t if std::mem::discriminant(t) == std::mem::discriminant(tag)))
+            .filter(|m| matches!(&m.mod_tag, t if std::mem::discriminant(t) == std::mem::discriminant(tag)))
             .collect()
     }
 
@@ -136,7 +174,7 @@ impl Module {
         println!("Total mods: {}", self.mods.len());
         println!("\nMods (alphabetically):");
         for (mod_id, mod_entry) in &self.mods {
-            println!("  {} v{} - {:?}", mod_id, mod_entry.mod_version, mod_entry.mod_type);
+            println!("  {} v{} - {:?}", mod_id, mod_entry.mod_version, mod_entry.mod_tag);
         }
     }
 }
@@ -146,30 +184,74 @@ fn main() {
     // Load the module from test.json
     match Module::from_file("test.json") {
         Ok(module) => {
-            // // Print module information
-            // module.print_info();
-            //
-            // println!("\n--- Testing Lookups ---");
-            //
-            // // Test individual mod lookup
-            // if let Some(tag) = module.get_mod_type("mod2") {
-            //     println!("mod2 is: {:?}", tag);
-            // }
-            //
-            // // Get all client-side mods
-            // let client_mods = module.get_mods_by_type(&DefaultTags::Client);
-            // println!("\nClient-side mods:");
-            // for mod_entry in client_mods {
-            //     println!("{}", mod_entry.mod_id);
-            // }
-            // readDir();
-            let results = get_jar_files("/Users/morganbennett/Downloads");
-            for result in results {
-                println!("{:?}",result);
+            println!("Default module successfully loaded.");
+            let directory = input_str("Please navigate to the chosen directory:");
+            // Get all JAR files from the chosen directory
+            let results = get_jar_files(&directory);
+            println!("The following JAR files were found in the chosen directory: ");
+            // Unwrap and safely print all JAR files
+            match results {
+                Ok(list) => {
+                    for result in list {
+                        println!("{}",result);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {:?}",e)
+                }
             }
+            // Extracts all ModIDs from Module
+            for (key,value) in &module.mods {
+                // Key - Mod ID, Value - ModStruct of ver and type
+                println!("{} | {:?}",key,value);
+            }
+
+            let test_file = input_str("\nPlease enter a path to a FILE:");
+            let results = get_mod_id_and_type(&test_file);
+            println!("{:?}",results);
+
         }
         Err(e) => {
             eprintln!("Error loading module: {}", e);
+        }
+    }
+}
+
+
+// Helper function to take input and return string
+fn input_str(print: &str) -> String{
+    // Print message
+    println!("{}",print);
+    // Create storage variable
+    let mut input_str = String::new();
+    // Read input
+    io::stdin()
+        .read_line(&mut input_str)
+        .expect("Failed to read line");
+    // Return input
+    input_str.trim().to_string()
+}
+
+// Helper function to take input and return integer
+fn input_num(prompt: &str) -> i32 {
+    // Enter Loop
+    loop {
+        // Print message
+        print!("{} ", prompt);
+        io::stdout().flush().ok();
+        // Create storage variable
+        let mut input_str = String::new();
+        // Try and read input
+        if let Err(_) = io::stdin().read_line(&mut input_str) {
+            println!("Couldn't read input. Please try again.");
+            continue;
+        }
+        // Trim it
+        let trimmed = input_str.trim();
+        // Convert it to an integer
+        match trimmed.parse::<i32>() {
+            Ok(n) => return n,
+            Err(_) => println!("`\nInvalid input: `{}`. Please enter a whole number.", trimmed),
         }
     }
 }
