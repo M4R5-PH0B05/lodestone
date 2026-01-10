@@ -14,23 +14,23 @@ Lodestone is a GUI-based application that helps identify and manage client-side 
 
 ## Features
 
-### 🏷️ Module-Based Classification
+### Module-Based Classification
 - Load community-curated modules that identify client-side, server-side, and universal mods
 - Support for custom modules to handle specific modpacks, dependencies, or incompatibilities
 - Extensible tagging system beyond just client/server classification
 
-### 🔧 Powerful Management Tools
+### Powerful Management Tools
 - **Remove** all mods matching a specific tag
 - **Move** mods to different directories based on their tags
 - **ZIP** collections of mods by category
 - **Export** mod lists to text files for documentation
 
-### 👥 Community Collaboration
+### Community Collaboration
 - Tag unrecognized mods directly in the application
 - Submit new mod classifications to module authors
 - Contribute to growing the community knowledge base
 
-### 📦 Flexible Module System
+### Flexible Module System
 Modules are simple JSON files containing:
 - Module metadata (name, version, author)
 - Mod classifications with IDs and tags
@@ -72,7 +72,7 @@ Modules use a simple JSON structure:
 
 ## Project Status
 
-🚧 **Currently in active development** 🚧
+**Currently in active development** 
 
 Lodestone is being built with Rust for performance and reliability. The core architecture and data structures are complete, with GUI implementation in progress.
 
@@ -102,5 +102,5 @@ Contributions are welcome! Whether it's:
 ---
 
 <p align="center">
-  Made with ❤️ for the Minecraft modding community
+  Made with love for the Minecraft modding community
 </p>
