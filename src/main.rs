@@ -1,136 +1,747 @@
-// PROJECT: **LODESTONE**
-// OUTLINE: A GUI-Based application which uses community driven selection to identify client and server-side-based MC mods. It will use 'modules' that can be loaded that will flag certain mods with tags.
-//          There will be a 'default' modul e, which will identify 'client' and 'server' side mods.
-//          Custom modules could isolate dependencies for certain mods, mods for certain modpacks, common
-//          incompatibilities between mods, etc...
-//          All modules will be in JSON format.
-//          The module header will contain a name, creator and version.
-//          The content will be the mod id, e.g. 'create' and the type, e.g. 'client' or 'server'.
-//          The application will have multiple functions, however, the primary ones are:
-//             - A 'remove all' button of a certain tag, for example, to remove all client side mods.
-//              - A way to tag mods yourself, if a mod is not recognized by the current module.
-//              - There will then be a way to submit this to the module author, and they may choose to
-//                integrate it into the current module.
-//              - There will be a button to move all mods of a certain type to a different directory.
-//              - There will be a button to ZIP all mods of a certain type.
-//              - There will be a button to write all names of mods of a certain type to a .txt file.
-//          TBD
-//
-// DATA STRUCTURES: A 'Mod' STRUCT will be created. It will have the following attributes:
-//                      - ModID: String ( e.g. 'create' )
-//                      - ModVersion: f64 ( e.g. 1.23 )
-//                      - ModType: Enum. (e.g. 'client')
-//                  As mentioned before, there will be an ENUM called default_tags. It will have 4 values:
-//                      - Client
-//                      - Server
-//                      - Both
-//                      - Unknown
-//                  There will also be a 'Module' STRUCT. It will have the following attributes:
-//                      - ModuleName: String
-//                      - ModuleVersion: f64
-//                      - ModuleAuthor: String
-//                      - Mods: Vector<Mod>
-//
-// PROJECT FLOW: Disclosed in the 'DRAWIO' diagram in the root directory.
-//               JSON file will be loaded. ALl mods will be read into mod structs, all mod structs
-//               Will be put into vector, which will be loaded into module struct.
-//               When an operation is chosen, the directory will be searched by all mods in vector.
-//               When a mod is found, an operation will be conducted.
-//
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+use iced::alignment;
+use iced::theme::Theme;
+use iced::widget::{
+    button, column, container, pick_list, row, scrollable, text, text_input, Space,
+};
+use iced::{Color, Element, Font, Length, Settings, Size, Task};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 enum DefaultTags {
     Unknown,
     Client,
     Server,
-    Both
+    Both,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+
+impl std::fmt::Display for DefaultTags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DefaultTags::Unknown => write!(f, "Unknown"),
+            DefaultTags::Client => write!(f, "Client"),
+            DefaultTags::Server => write!(f, "Server"),
+            DefaultTags::Both => write!(f, "Both"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 enum ModTypes {
     Unknown,
     Forge,
     NeoForge,
     Fabric,
-    Quilt
+    Quilt,
+}
+
+impl std::fmt::Display for ModTypes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModTypes::Unknown => write!(f, "Unknown"),
+            ModTypes::Forge => write!(f, "Forge"),
+            ModTypes::NeoForge => write!(f, "NeoForge"),
+            ModTypes::Fabric => write!(f, "Fabric"),
+            ModTypes::Quilt => write!(f, "Quilt"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-// Previously also had mod_id, but that is being used as the key
-// For the B-Tree storage solution, so the mod_id property
-// was removed to prevent data duplication
 struct Mod {
-    // changed to String to match test.json values like "0.5.8.29"
     mod_version: String,
     mod_tag: DefaultTags,
-    // changed from String to ModTypes so mod_type uses the enum
-    mod_type: ModTypes
+    mod_type: ModTypes,
 }
+
 #[derive(Debug, Deserialize, Serialize)]
 struct ModuleHeader {
     module_name: String,
-    // changed to f64 to match Module.module_version (and the numeric value in test.json)
     module_version: f64,
-    module_author: String
+    module_author: String,
 }
+
 #[derive(Debug, Deserialize, Serialize)]
 struct ModuleJson {
     header: ModuleHeader,
-    // Previously a vector could be a hashmap, although mod ver would have to be removed.
-    // I believe a B-Tree is optimal
-    mods: BTreeMap<String, Mod>
+    mods: BTreeMap<String, Mod>,
 }
+
 #[derive(Debug)]
 struct Module {
     module_name: String,
     module_version: f64,
     module_author: String,
-    mods: BTreeMap<String,Mod>
+    mods: BTreeMap<String, Mod>,
 }
 
-
-// Helper function to take input and return string
-fn input_str(print: &str) -> String{
-    // Print message
-    println!("{}",print);
-    // Create storage variable
-    let mut input_str = String::new();
-    // Read input
-    io::stdin()
-        .read_line(&mut input_str)
-        .expect("Failed to read line");
-    // Return input
-    input_str.trim().to_string()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Operation {
+    Zip,
+    Delete,
+    WriteNames,
+    Move,
 }
 
-// Helper function to take input and return integer
-fn input_num(prompt: &str) -> i32 {
-    // Enter Loop
-    loop {
-        // Print message
-        print!("{} ", prompt);
-        io::stdout().flush().ok();
-        // Create storage variable
-        let mut input_str = String::new();
-        // Try and read input
-        if let Err(_) = io::stdin().read_line(&mut input_str) {
-            println!("Couldn't read input. Please try again.");
-            continue;
-        }
-        // Trim it
-        let trimmed = input_str.trim();
-        // Convert it to an integer
-        match trimmed.parse::<i32>() {
-            Ok(n) => return n,
-            Err(_) => println!("`\nInvalid input: `{}`. Please enter a whole number.", trimmed),
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Operation::Zip => write!(f, "Zip"),
+            Operation::Delete => write!(f, "Delete"),
+            Operation::WriteNames => write!(f, "Write Names"),
+            Operation::Move => write!(f, "Move"),
         }
     }
 }
+
+#[derive(Debug, Clone)]
+struct ScanResult {
+    jar_name: String,
+    mod_id: String,
+    detected_type: ModTypes,
+    detected_version: Option<String>,
+    module_tag: Option<DefaultTags>,
+    module_type: Option<ModTypes>,
+    module_version: Option<String>,
+    full_match: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ScanSummary {
+    jar_count: usize,
+    identified_count: usize,
+    full_match_count: usize,
+}
+
+#[derive(Debug, Clone)]
+enum Message {
+    RefreshModules,
+    ModuleSelected(String),
+    LoadModule,
+    DirectoryChanged(String),
+    BrowseDirectory,
+    ScanDirectory,
+    TagSelected(DefaultTags),
+    OperationSelected(Operation),
+    OutputChanged(String),
+    RunOperation,
+}
+
+struct LodestoneApp {
+    modules: Vec<String>,
+    selected_module: Option<String>,
+    module: Option<Module>,
+    directory: String,
+    tag: DefaultTags,
+    operation: Operation,
+    output_path: String,
+    scan_results: Vec<ScanResult>,
+    summary: ScanSummary,
+    jar_to_modid: BTreeMap<String, String>,
+    log: Vec<String>,
+}
+
+impl Default for LodestoneApp {
+    fn default() -> Self {
+        let modules = load_module_list();
+        let selected_module = modules.first().cloned();
+        Self {
+            modules,
+            selected_module,
+            module: None,
+            directory: String::new(),
+            tag: DefaultTags::Client,
+            operation: Operation::Zip,
+            output_path: String::new(),
+            scan_results: Vec::new(),
+            summary: ScanSummary::default(),
+            jar_to_modid: BTreeMap::new(),
+            log: vec!["Welcome to Lodestone.".to_string()],
+        }
+    }
+}
+
+fn update(state: &mut LodestoneApp, message: Message) -> Task<Message> {
+    match message {
+        Message::RefreshModules => {
+            state.modules = load_module_list();
+            if let Some(selected) = &state.selected_module {
+                if !state.modules.contains(selected) {
+                    state.selected_module = state.modules.first().cloned();
+                }
+            } else {
+                state.selected_module = state.modules.first().cloned();
+            }
+            push_log(&mut state.log, "Module list refreshed.".to_string());
+        }
+        Message::ModuleSelected(path) => {
+            state.selected_module = Some(path);
+        }
+        Message::LoadModule => {
+            if let Some(path) = &state.selected_module {
+                match Module::from_file(path) {
+                    Ok(module) => {
+                        state.module = Some(module);
+                        state.scan_results.clear();
+                        state.summary = ScanSummary::default();
+                        state.jar_to_modid.clear();
+                        push_log(&mut state.log, format!("Loaded module: {}", path));
+                    }
+                    Err(e) => {
+                        state.module = None;
+                        push_log(&mut state.log, format!("Failed to load module {}: {}", path, e));
+                    }
+                }
+            } else {
+                push_log(&mut state.log, "Select a module before loading.".to_string());
+            }
+        }
+        Message::DirectoryChanged(value) => {
+            state.directory = value;
+        }
+        Message::BrowseDirectory => {
+            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                state.directory = folder.display().to_string();
+                push_log(
+                    &mut state.log,
+                    format!("Selected directory: {}", state.directory),
+                );
+            }
+        }
+        Message::ScanDirectory => {
+            if state.module.is_none() {
+                push_log(&mut state.log, "Load a module before scanning.".to_string());
+                return Task::none();
+            }
+            if state.directory.trim().is_empty() {
+                push_log(
+                    &mut state.log,
+                    "Enter a directory path before scanning.".to_string(),
+                );
+                return Task::none();
+            }
+
+            match scan_directory(&state.directory, state.module.as_ref().unwrap()) {
+                Ok((results, summary, jar_to_modid)) => {
+                    state.scan_results = results;
+                    state.summary = summary;
+                    state.jar_to_modid = jar_to_modid;
+                    push_log(
+                        &mut state.log,
+                        format!(
+                        "Scan complete: {} jars, {} identified, {} full matches.",
+                        state.summary.jar_count,
+                        state.summary.identified_count,
+                        state.summary.full_match_count
+                    ),
+                    );
+                }
+                Err(e) => {
+                    push_log(&mut state.log, format!("Scan failed: {}", e));
+                }
+            }
+        }
+        Message::TagSelected(tag) => {
+            state.tag = tag;
+        }
+        Message::OperationSelected(operation) => {
+            state.operation = operation;
+            state.output_path.clear();
+        }
+        Message::OutputChanged(value) => {
+            state.output_path = value;
+        }
+        Message::RunOperation => {
+            if state.module.is_none() {
+                push_log(
+                    &mut state.log,
+                    "Load a module before running an operation.".to_string(),
+                );
+                return Task::none();
+            }
+            if state.jar_to_modid.is_empty() {
+                push_log(
+                    &mut state.log,
+                    "Scan a directory before running an operation.".to_string(),
+                );
+                return Task::none();
+            }
+
+            let module = state.module.as_ref().unwrap();
+            let tag = state.tag;
+            let dir = state.directory.trim();
+
+            match state.operation {
+                Operation::Zip => {
+                    if state.output_path.trim().is_empty() {
+                        push_log(
+                            &mut state.log,
+                            "Provide an output zip filename.".to_string(),
+                        );
+                        return Task::none();
+                    }
+                    match zip_files_with_tag(
+                        dir,
+                        &state.jar_to_modid,
+                        module,
+                        tag,
+                        state.output_path.trim(),
+                    ) {
+                        Ok(n) => push_log(&mut state.log, format!("Zipped {} files.", n)),
+                        Err(e) => push_log(&mut state.log, format!("Zip error: {}", e)),
+                    }
+                }
+                Operation::Delete => {
+                    if state.output_path.trim() != "DELETE" {
+                        push_log(
+                            &mut state.log,
+                            "Type DELETE in the confirmation box to remove files.".to_string(),
+                        );
+                        return Task::none();
+                    }
+                    match delete_files_with_tag(dir, &state.jar_to_modid, module, tag) {
+                        Ok(n) => push_log(&mut state.log, format!("Deleted {} files.", n)),
+                        Err(e) => push_log(&mut state.log, format!("Delete error: {}", e)),
+                    }
+                }
+                Operation::WriteNames => {
+                    if state.output_path.trim().is_empty() {
+                        push_log(&mut state.log, "Provide an output filename.".to_string());
+                        return Task::none();
+                    }
+                    match write_names_with_tag(
+                        dir,
+                        &state.jar_to_modid,
+                        module,
+                        tag,
+                        state.output_path.trim(),
+                    ) {
+                        Ok(n) => push_log(&mut state.log, format!("Wrote {} names.", n)),
+                        Err(e) => push_log(&mut state.log, format!("Write error: {}", e)),
+                    }
+                }
+                Operation::Move => {
+                    if state.output_path.trim().is_empty() {
+                        push_log(
+                            &mut state.log,
+                            "Provide a destination directory.".to_string(),
+                        );
+                        return Task::none();
+                    }
+                    match move_files_with_tag(
+                        dir,
+                        &state.jar_to_modid,
+                        module,
+                        tag,
+                        state.output_path.trim(),
+                    ) {
+                        Ok(n) => push_log(&mut state.log, format!("Moved {} files.", n)),
+                        Err(e) => push_log(&mut state.log, format!("Move error: {}", e)),
+                    }
+                }
+            }
+        }
+    }
+
+    if state.log.len() > 200 {
+        state.log.drain(0..state.log.len() - 200);
+    }
+
+    Task::none()
+}
+
+fn push_log(log: &mut Vec<String>, entry: String) {
+    if log.last().map(|last| last == &entry).unwrap_or(false) {
+        return;
+    }
+    log.push(entry);
+    if log.len() > 200 {
+        log.drain(0..log.len() - 200);
+    }
+}
+
+fn view(state: &LodestoneApp) -> Element<'_, Message> {
+    let header = container(
+        row![
+            column![
+                text("Lodestone")
+                    .size(36)
+                    .style(text_color(Color::from_rgb(0.18, 0.16, 0.14))),
+                text("Mod intelligence for Minecraft installs")
+                    .size(16)
+                    .style(text_color(Color::from_rgb(0.46, 0.42, 0.38))),
+            ]
+            .spacing(6)
+            .align_x(alignment::Horizontal::Left),
+            Space::with_width(Length::Fill),
+            container(
+                text(format!(
+                    "{} jars · {} identified · {} full matches",
+                    state.summary.jar_count,
+                    state.summary.identified_count,
+                    state.summary.full_match_count
+                ))
+                .size(14)
+                .style(text_color(Color::from_rgb(0.52, 0.49, 0.46))),
+            )
+            .padding(12)
+            .style(|_| pill_style()),
+        ]
+        .align_y(alignment::Vertical::Center),
+    )
+    .padding(24)
+    .style(|_| header_style());
+
+    let module_picker = pick_list(
+        state.modules.clone(),
+        state.selected_module.clone(),
+        Message::ModuleSelected,
+    )
+    .placeholder("Select a module");
+
+    let setup_card = container(
+        column![
+            text("Module + Scan")
+                .size(18)
+                .style(text_color(Color::from_rgb(0.22, 0.2, 0.18))),
+            text("Load a module file and scan a mods folder.")
+                .size(13)
+                .style(text_color(Color::from_rgb(0.5, 0.46, 0.42))),
+            module_picker,
+            row![
+                button(text("Refresh")).style(|theme, status| secondary_button(theme, status)).on_press(Message::RefreshModules),
+                button(text("Load")).style(|theme, status| primary_button(theme, status)).on_press(Message::LoadModule),
+            ]
+            .spacing(12),
+            row![
+                text_input("/path/to/mods", &state.directory)
+                    .on_input(Message::DirectoryChanged)
+                    .padding(12)
+                    .size(14),
+                button(text("Browse"))
+                    .style(|theme, status| secondary_button(theme, status))
+                    .on_press(Message::BrowseDirectory),
+            ]
+            .spacing(10),
+            button(text("Scan Directory"))
+                .style(|theme, status| primary_button(theme, status))
+                .on_press(Message::ScanDirectory),
+        ]
+        .spacing(14),
+    )
+    .padding(20)
+    .style(|_| card_style());
+
+    let tag_picker = pick_list(
+        vec![
+            DefaultTags::Client,
+            DefaultTags::Server,
+            DefaultTags::Both,
+            DefaultTags::Unknown,
+        ],
+        Some(state.tag),
+        Message::TagSelected,
+    )
+    .placeholder("Tag");
+
+    let operation_picker = pick_list(
+        vec![
+            Operation::Zip,
+            Operation::Delete,
+            Operation::WriteNames,
+            Operation::Move,
+        ],
+        Some(state.operation),
+        Message::OperationSelected,
+    )
+    .placeholder("Operation");
+
+    let output_label = match state.operation {
+        Operation::Zip => "Output zip filename",
+        Operation::Delete => "Type DELETE to confirm",
+        Operation::WriteNames => "Output text filename",
+        Operation::Move => "Destination directory",
+    };
+
+    let operations_card = container(
+        column![
+            text("Operations")
+                .size(18)
+                .style(text_color(Color::from_rgb(0.22, 0.2, 0.18))),
+            text("Run actions on tagged mods.")
+                .size(13)
+                .style(text_color(Color::from_rgb(0.5, 0.46, 0.42))),
+            row![tag_picker, operation_picker].spacing(12),
+            text_input(output_label, &state.output_path)
+                .on_input(Message::OutputChanged)
+                .padding(12)
+                .size(14),
+            button(text("Run Operation"))
+                .style(|theme, status| match state.operation {
+                    Operation::Delete => danger_button(theme, status),
+                    _ => primary_button(theme, status),
+                })
+                .on_press(Message::RunOperation),
+        ]
+        .spacing(14),
+    )
+    .padding(20)
+    .style(|_| card_style());
+
+    let left_panel = column![setup_card, operations_card]
+        .spacing(18)
+        .width(Length::FillPortion(2));
+
+    let result_list = if state.scan_results.is_empty() {
+        container(
+            column![
+                text("No scan results yet.")
+                    .size(16)
+                    .style(text_color(Color::from_rgb(0.46, 0.43, 0.4))),
+                text("Load a module and scan a directory to populate results.")
+                    .size(13)
+                    .style(text_color(Color::from_rgb(0.56, 0.52, 0.48))),
+            ]
+            .spacing(8)
+            .align_x(alignment::Horizontal::Center),
+        )
+        .padding(24)
+        .style(|_| soft_card_style())
+    } else {
+        let mut list = column![].spacing(12);
+        for result in &state.scan_results {
+            let status_color = if result.full_match {
+                Color::from_rgb(0.2, 0.6, 0.44)
+            } else {
+                Color::from_rgb(0.78, 0.42, 0.22)
+            };
+
+            let module_tag = result
+                .module_tag
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            let module_type = result
+                .module_type
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            let module_version = result
+                .module_version
+                .clone()
+                .unwrap_or_else(|| "-".to_string());
+
+            let detected_version = result
+                .detected_version
+                .clone()
+                .unwrap_or_else(|| "-".to_string());
+
+            list = list.push(
+                container(
+                    column![
+                        row![
+                            text(&result.jar_name)
+                                .size(16)
+                                .style(text_color(Color::from_rgb(0.2, 0.18, 0.16))),
+                            Space::with_width(Length::Fill),
+                            text(if result.full_match { "Full match" } else { "Partial" })
+                                .size(12)
+                                .style(text_color(status_color)),
+                        ]
+                        .align_y(alignment::Vertical::Center),
+                        text(format!("Mod ID: {}", result.mod_id))
+                            .size(13)
+                            .style(text_color(Color::from_rgb(0.48, 0.44, 0.4))),
+                        row![
+                            text(format!(
+                                "Detected: {} v{}",
+                                result.detected_type, detected_version
+                            ))
+                            .size(12)
+                            .style(text_color(Color::from_rgb(0.52, 0.48, 0.44))),
+                            Space::with_width(Length::Fill),
+                            text(format!(
+                                "Module: {} v{} · {}",
+                                module_type, module_version, module_tag
+                            ))
+                            .size(12)
+                            .style(text_color(Color::from_rgb(0.52, 0.48, 0.44))),
+                        ],
+                    ]
+                    .spacing(6),
+                )
+                .padding(16)
+                .style(|_| soft_card_style()),
+            );
+        }
+
+        container(scrollable(list).height(Length::Fill))
+            .padding(4)
+            .style(|_| soft_card_style())
+    };
+
+    let log_list = {
+        let mut list = column![].spacing(6);
+        for entry in state.log.iter().rev().take(6) {
+            list = list.push(
+                text(entry)
+                    .size(12)
+                    .style(text_color(Color::from_rgb(0.5, 0.46, 0.42))),
+            );
+        }
+        container(
+            column![
+                text("Activity")
+                    .size(14)
+                    .style(text_color(Color::from_rgb(0.36, 0.32, 0.28))),
+                list,
+            ]
+            .spacing(8),
+        )
+        .padding(14)
+        .style(|_| soft_card_style())
+    };
+
+    let right_panel = column![
+        row![
+            text("Results")
+                .size(18)
+                .style(text_color(Color::from_rgb(0.22, 0.2, 0.18))),
+            Space::with_width(Length::Fill),
+        ]
+        .align_y(alignment::Vertical::Center),
+        result_list,
+        log_list,
+    ]
+    .spacing(16)
+    .width(Length::FillPortion(3));
+
+    let content = row![left_panel, right_panel]
+        .spacing(20)
+        .align_y(alignment::Vertical::Top)
+        .padding(24);
+
+    container(column![header, content])
+        .style(|_| background_style())
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn main() -> iced::Result {
+    iced::application("Lodestone", update, view)
+        .theme(|_| Theme::Light)
+        .default_font(Font::with_name("Fira Sans"))
+        .window(iced::window::Settings {
+            size: Size::new(1200.0, 780.0),
+            min_size: Some(Size::new(980.0, 680.0)),
+            ..Default::default()
+        })
+        .settings(Settings {
+            antialiasing: true,
+            ..Default::default()
+        })
+        .run_with(|| (LodestoneApp::default(), Task::none()))
+}
+
+impl Module {
+    fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let json_string = fs::read_to_string(path)?;
+        let json_data: ModuleJson = serde_json::from_str(&json_string)?;
+        Ok(Self::from_json(json_data))
+    }
+
+    fn from_json(json_data: ModuleJson) -> Self {
+        Self {
+            module_name: json_data.header.module_name,
+            module_version: json_data.header.module_version,
+            module_author: json_data.header.module_author,
+            mods: json_data.mods,
+        }
+    }
+}
+
+fn load_module_list() -> Vec<String> {
+    let mut modules = Vec::new();
+    if Path::new("test.json").exists() {
+        modules.push("test.json".to_string());
+    }
+
+    if let Ok(entries) = fs::read_dir("modules") {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if let Some(fname) = path.file_name().and_then(|s| s.to_str()) {
+                    modules.push(format!("modules/{}", fname));
+                }
+            }
+        }
+    }
+
+    if modules.is_empty() {
+        modules.push("test.json".to_string());
+    }
+
+    modules
+}
+
+fn scan_directory(
+    directory: &str,
+    module: &Module,
+) -> Result<(Vec<ScanResult>, ScanSummary, BTreeMap<String, String>), Box<dyn std::error::Error>> {
+    let jar_list = get_jar_files(directory)?;
+    let mut scan_results = Vec::new();
+    let mut jar_to_modid = BTreeMap::new();
+
+    for jar_name in jar_list.iter() {
+        let path = format!("{}/{}", directory, jar_name);
+        if let Some((mod_id, detected_type, detected_version)) = get_mod_id_and_type(&path)? {
+            jar_to_modid.insert(jar_name.clone(), mod_id.clone());
+
+            let (module_tag, module_type, module_version, full_match) = if let Some(mod_entry) =
+                module.mods.get(&mod_id)
+            {
+                let module_version = mod_entry.mod_version.clone();
+                let full_match = detected_version
+                    .as_ref()
+                    .map(|v| v == &module_version && detected_type == mod_entry.mod_type)
+                    .unwrap_or(false);
+                (
+                    Some(mod_entry.mod_tag),
+                    Some(mod_entry.mod_type),
+                    Some(module_version),
+                    full_match,
+                )
+            } else {
+                (None, None, None, false)
+            };
+
+            scan_results.push(ScanResult {
+                jar_name: jar_name.clone(),
+                mod_id,
+                detected_type,
+                detected_version,
+                module_tag,
+                module_type,
+                module_version,
+                full_match,
+            });
+        }
+    }
+
+    let summary = ScanSummary {
+        jar_count: jar_list.len(),
+        identified_count: scan_results.len(),
+        full_match_count: scan_results.iter().filter(|r| r.full_match).count(),
+    };
+
+    Ok((scan_results, summary, jar_to_modid))
+}
+
 fn get_jar_files(dir_path: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut jar_files = Vec::new();
 
@@ -138,7 +749,6 @@ fn get_jar_files(dir_path: &str) -> Result<Vec<String>, Box<dyn std::error::Erro
         let entry = entry?;
         let path = entry.path();
 
-        // Only collect .jar files (uncomment the branch below if you want to filter by extension)
         if path.extension().and_then(|s| s.to_str()) == Some("jar") {
             if let Some(file_name) = path.file_name() {
                 jar_files.push(file_name.to_string_lossy().to_string());
@@ -149,10 +759,9 @@ fn get_jar_files(dir_path: &str) -> Result<Vec<String>, Box<dyn std::error::Erro
     Ok(jar_files)
 }
 
-// Helper function to get mod ID, mod Type and detected version from the JAR file
-// Now returns the detected type as ModTypes and detected version as Option<String>
-fn get_mod_id_and_type(path: &str) -> Result<Option<(String, ModTypes, Option<String>)>, Box<dyn std::error::Error>> {
-    // tiny helpers to parse versions as strings
+fn get_mod_id_and_type(
+    path: &str,
+) -> Result<Option<(String, ModTypes, Option<String>)>, Box<dyn std::error::Error>> {
     fn parse_toml_version(v: &toml::Value) -> Option<String> {
         if let Some(s) = v.as_str() {
             return Some(s.to_string());
@@ -165,6 +774,7 @@ fn get_mod_id_and_type(path: &str) -> Result<Option<(String, ModTypes, Option<St
         }
         None
     }
+
     fn parse_json_version(v: &serde_json::Value) -> Option<String> {
         if let Some(s) = v.as_str() {
             return Some(s.to_string());
@@ -175,11 +785,9 @@ fn get_mod_id_and_type(path: &str) -> Result<Option<(String, ModTypes, Option<St
         None
     }
 
-    // Open the file from the path
     let file = fs::File::open(path)?;
-    // Unzip it (A jar file is basically a ZIP)
     let mut archive = zip::ZipArchive::new(file)?;
-    // Iterate over the length and produce all file paths in the JAR directory
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let name = file.name();
@@ -187,8 +795,6 @@ fn get_mod_id_and_type(path: &str) -> Result<Option<(String, ModTypes, Option<St
         if name.ends_with("mods.toml") {
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;
-            println!("Found Forge-style mods.toml: \n{}", contents);
-            // Heuristic: if contents mention "neoforge" assume NeoForge, otherwise Forge
             let lower = contents.to_lowercase();
             let found_type = if lower.contains("neoforge") || lower.contains("neo-forge") {
                 ModTypes::NeoForge
@@ -207,31 +813,22 @@ fn get_mod_id_and_type(path: &str) -> Result<Option<(String, ModTypes, Option<St
                 .get("mods")
                 .and_then(|v| v.as_array())
                 .and_then(|arr| arr.first())
-                .and_then(|mod_entry| {
-                    // try common keys: "version" or "modVersion"
-                    mod_entry.get("version")
-                        .or_else(|| mod_entry.get("modVersion"))
-                })
-                .and_then(|ver| parse_toml_version(ver));
+                .and_then(|mod_entry| mod_entry.get("version").or_else(|| mod_entry.get("modVersion")))
+                .and_then(parse_toml_version);
             return Ok(mod_id.map(|id| (id, found_type, detected_version)));
-
         } else if name.ends_with("fabric.mod.json") {
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;
-            println!("Found Fabric mods.json: \n{}", contents);
             let parsed: serde_json::Value = serde_json::from_str(&contents)?;
             let mod_id = parsed
                 .get("id")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            let detected_version = parsed.get("version").and_then(|v| parse_json_version(v));
+            let detected_version = parsed.get("version").and_then(parse_json_version);
             return Ok(mod_id.map(|id| (id, ModTypes::Fabric, detected_version)));
-
         } else if name.ends_with("mcmod.info") {
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;
-            println!("Found mcmod.info: \n{}", contents);
-            // mcmod.info is a legacy JSON array; treat as Forge
             let parsed: serde_json::Value = serde_json::from_str(&contents)?;
             let mod_id = parsed
                 .as_array()
@@ -243,194 +840,14 @@ fn get_mod_id_and_type(path: &str) -> Result<Option<(String, ModTypes, Option<St
                 .as_array()
                 .and_then(|arr| arr.first())
                 .and_then(|mod_entry| mod_entry.get("version"))
-                .and_then(|v| parse_json_version(v));
+                .and_then(parse_json_version);
             return Ok(mod_id.map(|id| (id, ModTypes::Forge, detected_version)));
         }
     }
 
-    // If nothing matched in the archive, return None
     Ok(None)
 }
 
-impl Module {
-    fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let json_string = fs::read_to_string(path)?;
-        let json_data: ModuleJson = serde_json::from_str(&json_string)?;
-        // Convert ModuleJson to Module
-        Ok(Self::from_json(json_data))
-    }
-    fn from_json(json_data: ModuleJson) -> Self {
-        Self {
-            module_name: json_data.header.module_name,
-            // header.module_version is now f64
-            module_version: json_data.header.module_version,
-            module_author: json_data.header.module_author,
-            mods: json_data.mods,
-        }
-    }
-
-    // Get a mod by its ID
-    fn get_mod_type(&self,mod_id: &str) -> Option<&DefaultTags> {
-        self.mods.get(mod_id).map(|m| &m.mod_tag)
-    }
-
-    // Get all mods with a certain Tag
-    fn get_mods_by_type(&self, tag: &DefaultTags) -> Vec<&Mod> {
-        // use direct equality now that DefaultTags derives PartialEq
-        self.mods
-            .values()
-            .filter(|m| m.mod_tag == *tag)
-            .collect()
-    }
-
-    //Print Info
-    fn print_info(&self) {
-        println!("Module: {}", self.module_name);
-        println!("Version: {}", self.module_version);
-        println!("Author: {}", self.module_author);
-        println!("Total mods: {}", self.mods.len());
-        println!("\nMods (alphabetically):");
-        for (mod_id, mod_entry) in &self.mods {
-            println!("  {} v{} - {:?}", mod_id, mod_entry.mod_version, mod_entry.mod_tag);
-        }
-    }
-
-}
-
-
-// New helper: look for other modules in ./modules and let the user choose (0 = defaults)
-fn choose_module_file() -> String {
-    let mut module_files: Vec<String> = Vec::new();
-
-    // Try reading ./modules directory; if it doesn't exist or empty, we fall back to default
-    if let Ok(entries) = fs::read_dir("modules") {
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Some(fname) = path.file_name().and_then(|s| s.to_str()) {
-                    module_files.push(format!("modules/{}", fname));
-                }
-            }
-        }
-    }
-
-    if module_files.is_empty() {
-        println!("No additional modules found, loading default 'test.json'.");
-        return "test.json".to_string();
-    }
-
-    println!("Found additional module files:");
-    println!("  0) Default (test.json)");
-    for (i, f) in module_files.iter().enumerate() {
-        println!("  {}) {}", i + 1, f);
-    }
-
-    loop {
-        let choice = input_num("Select module number (0 for default):");
-        if choice == 0 {
-            return "test.json".to_string();
-        }
-        let idx = (choice - 1) as usize;
-        if idx < module_files.len() {
-            return module_files[idx].clone();
-        }
-        println!("Invalid selection, try again.");
-    }
-}
-
-
-// Parse DefaultTags from a string (case-insensitive)
-fn parse_default_tag(s: &str) -> DefaultTags {
-    match s.to_lowercase().as_str() {
-        "client" => DefaultTags::Client,
-        "server" => DefaultTags::Server,
-        "both" => DefaultTags::Both,
-        _ => DefaultTags::Unknown,
-    }
-}
-
-// Create a new module JSON file with header and empty mods map
-fn new_module(file_path: &str, name: &str, version: f64, author: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Build new ModuleJson
-    let header = ModuleHeader {
-        module_name: name.to_string(),
-        module_version: version,
-        module_author: author.to_string(),
-    };
-    let mods: BTreeMap<String, Mod> = BTreeMap::new();
-    let module_json = ModuleJson {
-        header,
-        mods,
-    };
-    // Write to the file
-    let file = fs::File::create(file_path)?;
-    serde_json::to_writer_pretty(file, &module_json)?;
-    Ok(())
-}
-
-// Add a mod entry to an existing module file
-fn add_mod_to_module(
-    file_path: &str,
-    mod_id: &str,
-    mod_version: &str,
-    mod_tag: DefaultTags,
-    mod_type: ModTypes,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let json_string = fs::read_to_string(file_path)?;
-    let mut module_json: ModuleJson = serde_json::from_str(&json_string)?;
-    let new_mod = Mod {
-        mod_version: mod_version.to_string(),
-        mod_tag,
-        mod_type,
-    };
-    module_json.mods.insert(mod_id.to_string(), new_mod);
-    let file = fs::File::create(file_path)?;
-    serde_json::to_writer_pretty(file, &module_json)?;
-    Ok(())
-}
-
-// Remove a mod by ID from an existing module file. Returns true if removed.
-fn remove_mod_from_module(file_path: &str, mod_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    let json_string = fs::read_to_string(file_path)?;
-    let mut module_json: ModuleJson = serde_json::from_str(&json_string)?;
-    let removed = module_json.mods.remove(mod_id).is_some();
-    if removed {
-        let file = fs::File::create(file_path)?;
-        serde_json::to_writer_pretty(file, &module_json)?;
-    }
-    Ok(removed)
-}
-
-// Edit an existing mod. Any Option that is None leaves that field unchanged.
-// Returns true if the mod existed and was updated.
-fn edit_mod_in_module(
-    file_path: &str,
-    mod_id: &str,
-    new_version: Option<&str>,
-    new_tag: Option<DefaultTags>,
-    new_type: Option<ModTypes>,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let json_string = fs::read_to_string(file_path)?;
-    let mut module_json: ModuleJson = serde_json::from_str(&json_string)?;
-    if let Some(mod_entry) = module_json.mods.get_mut(mod_id) {
-        if let Some(v) = new_version {
-            mod_entry.mod_version = v.to_string();
-        }
-        if let Some(t) = new_tag {
-            mod_entry.mod_tag = t;
-        }
-        if let Some(tp) = new_type {
-            mod_entry.mod_type = tp;
-        }
-        let file = fs::File::create(file_path)?;
-        serde_json::to_writer_pretty(file, &module_json)?;
-        return Ok(true);
-    }
-    Ok(false)
-}
-
-
-// Zip all jar files whose modules are tagged with `tag`. Returns the number of files added to zip.
 fn zip_files_with_tag(
     dir: &str,
     jar_to_modid: &BTreeMap<String, String>,
@@ -439,6 +856,7 @@ fn zip_files_with_tag(
     output_zip: &str,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     use zip::write::FileOptions;
+
     let out_file = fs::File::create(output_zip)?;
     let mut zip = zip::ZipWriter::new(out_file);
     let mut count = 0usize;
@@ -461,7 +879,6 @@ fn zip_files_with_tag(
     Ok(count)
 }
 
-// Delete all jar files whose modules are tagged with `tag`. Returns number deleted.
 fn delete_files_with_tag(
     dir: &str,
     jar_to_modid: &BTreeMap<String, String>,
@@ -483,7 +900,6 @@ fn delete_files_with_tag(
     Ok(count)
 }
 
-// Write all original jar filenames (one per line) for mods with `tag` to `out_file`.
 fn write_names_with_tag(
     dir: &str,
     jar_to_modid: &BTreeMap<String, String>,
@@ -496,15 +912,17 @@ fn write_names_with_tag(
     for (jar, modid) in jar_to_modid {
         if let Some(mod_entry) = module.mods.get(modid) {
             if mod_entry.mod_tag == tag {
-                writeln!(file, "{}", jar)?;
-                count += 1;
+                let path = Path::new(dir).join(jar);
+                if path.is_file() {
+                    writeln!(file, "{}", jar)?;
+                    count += 1;
+                }
             }
         }
     }
     Ok(count)
 }
 
-// Move all jar files whose modules are tagged with `tag` to `dest_dir`. Returns the number moved.
 fn move_files_with_tag(
     dir: &str,
     jar_to_modid: &BTreeMap<String, String>,
@@ -520,9 +938,8 @@ fn move_files_with_tag(
                 let src = Path::new(dir).join(jar);
                 let dst = Path::new(dest_dir).join(jar);
                 if src.is_file() {
-                    // Try and rename, fallback to copy+remove
                     match fs::rename(&src, &dst) {
-                        Ok(_) => { count += 1; }
+                        Ok(_) => count += 1,
                         Err(_) => {
                             fs::copy(&src, &dst)?;
                             fs::remove_file(&src)?;
@@ -536,141 +953,184 @@ fn move_files_with_tag(
     Ok(count)
 }
 
-fn main() {
-    // Choose which module JSON to load (default or other modules found in ./modules)
-    let module_path = choose_module_file();
+fn background_style() -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb(0.98, 0.965, 0.94).into()),
+        text_color: Some(Color::from_rgb(0.2, 0.18, 0.16)),
+        ..Default::default()
+    }
+}
 
-    // Load the module from the chosen path
-    match Module::from_file(&module_path) {
-        Ok(module) => {
-            println!("Module '{}' successfully loaded.", module_path);
-            let directory = input_str("Please navigate to the chosen directory:");
-            // Get all JAR files from the chosen directory
-            let results = get_jar_files(&directory);
-            println!("The following JAR files were found in the chosen directory: ");
-            // Unwrap and safely print all JAR files
-            // Store tuples of (jar_filename, mod_id, detected_mod_type, detected_version)
-            let mut mod_entries: Vec<(String, String, ModTypes, Option<String>)> = Vec::new();
-             match results {
-    // TESTING URL: /Users/morganbennett/Documents/curseforge/minecraft/Instances/testing/mods
-                Ok(list) => {
-                    for result in list {
-                        // keep the original jar filename
-                        let jar_name = result.clone();
-                        let path = directory.clone() + "/" + &jar_name;
-                        match get_mod_id_and_type(&path) {
-                            Ok(Some((id, detected_type, detected_version))) => {
-                                // store jar filename + detected metadata
-                                mod_entries.push((jar_name.clone(), id, detected_type, detected_version));
-                            }
-                            Ok(None) => {
-                                // No detectable metadata inside this jar -> treat as no match (silent)
-                            }
-                            Err(e) => {
-                                eprintln!("Error reading {} : {:?}", jar_name, e);
-                            }
-                        }
-                    }
+fn header_style() -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb(0.985, 0.975, 0.96).into()),
+        border: iced::border::Border {
+            color: Color::from_rgb(0.86, 0.82, 0.78),
+            width: 1.2,
+            radius: 18.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgb(0.65, 0.58, 0.52),
+            offset: iced::Vector::new(0.0, 6.0),
+            blur_radius: 18.0,
+        },
+        ..Default::default()
+    }
+}
 
-                    println!("There were {} mods with identifiable metadata.", mod_entries.len());
+fn card_style() -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb(0.995, 0.985, 0.97).into()),
+        border: iced::border::Border {
+            color: Color::from_rgb(0.88, 0.84, 0.8),
+            width: 1.0,
+            radius: 16.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgb(0.7, 0.64, 0.58),
+            offset: iced::Vector::new(0.0, 8.0),
+            blur_radius: 22.0,
+        },
+        ..Default::default()
+    }
+}
 
-                    // Build mapping from the original jar filename -> mod id
-                    let mut jar_to_modid: BTreeMap<String, String> = BTreeMap::new();
-                    for (jar, mod_id, _, _) in &mod_entries {
-                        jar_to_modid.insert(jar.clone(), mod_id.clone());
-                    }
-                    println!("Jar -> ModID mapping ({} entries):", jar_to_modid.len());
-                    for (jar, mod_id) in &jar_to_modid {
-                        println!("  {} -> {}", jar, mod_id);
-                    }
+fn soft_card_style() -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb(0.99, 0.98, 0.96).into()),
+        border: iced::border::Border {
+            color: Color::from_rgb(0.9, 0.86, 0.82),
+            width: 1.0,
+            radius: 14.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgb(0.74, 0.68, 0.6),
+            offset: iced::Vector::new(0.0, 6.0),
+            blur_radius: 18.0,
+        },
+        ..Default::default()
+    }
+}
 
-                    // ---------- Interactive operations by tag ----------
-                    println!("\nOperations available for tagged mods:");
-                    println!("  1) Zip all files with a tag");
-                    println!("  2) Delete all files with a tag");
-                    println!("  3) Write filenames of files with a tag to a text file");
-                    println!("  4) Move all files with a tag to another directory");
-                    println!("  0) Skip");
+fn pill_style() -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb(0.95, 0.92, 0.88).into()),
+        border: iced::border::Border {
+            color: Color::from_rgb(0.86, 0.8, 0.74),
+            width: 1.0,
+            radius: 999.0.into(),
+        },
+        ..Default::default()
+    }
+}
 
-                    let choice = input_num("Select operation number:");
-                    if choice != 0 {
-                        let tag_input = input_str("Enter tag (Client, Server, Both, Unknown):");
-                        let tag = parse_default_tag(tag_input.trim());
-                        match choice {
-                            1 => {
-                                let out_zip = input_str("Enter output zip filename (e.g. selected.zip):");
-                                match zip_files_with_tag(&directory, &jar_to_modid, &module, tag, &out_zip) {
-                                    Ok(n) => println!("Zipped {} files to {}", n, out_zip),
-                                    Err(e) => eprintln!("Zip error: {}", e),
-                                }
-                            }
-                            2 => {
-                                let confirm = input_str("Delete matched files from disk? Type YES to confirm:");
-                                if confirm == "YES" {
-                                    match delete_files_with_tag(&directory, &jar_to_modid, &module, tag) {
-                                        Ok(n) => println!("Deleted {} files.", n),
-                                        Err(e) => eprintln!("Delete error: {}", e),
-                                    }
-                                } else {
-                                    println!("Delete cancelled.");
-                                }
-                            }
-                            3 => {
-                                let out_file = input_str("Enter output filename for names (e.g. names.txt):");
-                                match write_names_with_tag(&directory, &jar_to_modid, &module, tag, &out_file) {
-                                    Ok(n) => println!("Wrote {} names to {}", n, out_file),
-                                    Err(e) => eprintln!("Write error: {}", e),
-                                }
-                            }
-                            4 => {
-                                let dest = input_str("Enter destination directory:");
-                                match move_files_with_tag(&directory, &jar_to_modid, &module, tag, &dest) {
-                                    Ok(n) => println!("Moved {} files to {}", n, dest),
-                                    Err(e) => eprintln!("Move error: {}", e),
-                                }
-                            }
-                            _ => println!("Unknown selection."),
-                        }
-                    }
+fn text_color(color: Color) -> impl Fn(&Theme) -> iced::widget::text::Style {
+    move |_| iced::widget::text::Style {
+        color: Some(color),
+    }
+}
 
-                    // Only print full matches (id present in module, detected_version Some and equals, and type equals)
-                    let mut match_count = 0;
+fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let base = button::Style {
+        background: Some(Color::from_rgb(0.78, 0.5, 0.3).into()),
+        text_color: Color::from_rgb(0.99, 0.98, 0.96),
+        border: iced::border::Border {
+            color: Color::from_rgb(0.78, 0.5, 0.3),
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgb(0.6, 0.4, 0.28),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 10.0,
+        },
+        ..Default::default()
+    };
 
-                    // iterate to find full matches
-                    for (jar, id, detected_type, detected_version) in &mod_entries {
-                        if let Some(mod_struct) = module.mods.get(id) {
-                            if let Some(v) = detected_version {
-                                // compare strings (module.Mod.mod_version is now String) and enum equality for type
-                                if v == &mod_struct.mod_version && detected_type == &mod_struct.mod_type {
-                                    match_count += 1;
-                                    println!(
-                                        "FULL MATCH: JAR: {} | MOD ID: {} | SIDE: {:?} | MODULE TYPE: {:?} | DETECTED TYPE: {:?} | VERSION: {}",
-                                        jar, id, mod_struct.mod_tag, mod_struct.mod_type, detected_type, v
-                                    );
-                                }
-                            }
-                            // if detected_version is None or types/versions don't match, silently skip (no output)
-                        }
-                        // if mod not in module, silently skip (no output)
-                    }
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(Color::from_rgb(0.84, 0.56, 0.34).into()),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Color::from_rgb(0.7, 0.44, 0.26).into()),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            background: Some(Color::from_rgb(0.88, 0.82, 0.78).into()),
+            text_color: Color::from_rgb(0.66, 0.62, 0.58),
+            ..base
+        },
+        button::Status::Active => base,
+    }
+}
 
-                     if match_count == 0 {
-                         println!("No full matches found.");
-                     } else {
-                         println!("{} full matches found.", match_count);
-                     }
+fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let base = button::Style {
+        background: Some(Color::from_rgb(0.94, 0.9, 0.86).into()),
+        text_color: Color::from_rgb(0.34, 0.3, 0.26),
+        border: iced::border::Border {
+            color: Color::from_rgb(0.86, 0.8, 0.74),
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgb(0.76, 0.7, 0.62),
+            offset: iced::Vector::new(0.0, 3.0),
+            blur_radius: 8.0,
+        },
+        ..Default::default()
+    };
 
-                 }
-                 Err(e) => {
-                     eprintln!("Error: {:?}", e)
-                 }
-             }
-            // // Extracts all ModIDs from Module
-            //
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(Color::from_rgb(0.96, 0.92, 0.88).into()),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Color::from_rgb(0.9, 0.86, 0.82).into()),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            background: Some(Color::from_rgb(0.92, 0.9, 0.88).into()),
+            text_color: Color::from_rgb(0.64, 0.6, 0.56),
+            ..base
+        },
+        button::Status::Active => base,
+    }
+}
 
-        }
-        Err(e) => {
-            eprintln!("Error loading module '{}': {}", module_path, e);
-        }
+fn danger_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let base = button::Style {
+        background: Some(Color::from_rgb(0.82, 0.38, 0.32).into()),
+        text_color: Color::from_rgb(0.98, 0.96, 0.95),
+        border: iced::border::Border {
+            color: Color::from_rgb(0.82, 0.38, 0.32),
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgb(0.66, 0.34, 0.28),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 10.0,
+        },
+        ..Default::default()
+    };
+
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(Color::from_rgb(0.88, 0.44, 0.36).into()),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Color::from_rgb(0.7, 0.32, 0.28).into()),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            background: Some(Color::from_rgb(0.9, 0.86, 0.84).into()),
+            text_color: Color::from_rgb(0.7, 0.66, 0.64),
+            ..base
+        },
+        button::Status::Active => base,
     }
 }
