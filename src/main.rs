@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use iced::alignment;
 use iced::theme::Theme;
@@ -10,6 +10,8 @@ use iced::widget::{
     button, column, container, pick_list, row, scrollable, text, text_input, Space,
 };
 use iced::{Color, Element, Font, Length, Settings, Size, Task};
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 enum DefaultTags {
@@ -51,6 +53,15 @@ impl std::fmt::Display for ModTypes {
     }
 }
 
+// ─── Data structures ──────────────────────────────────────────────────────────
+
+/// A single mod entry inside a module JSON file.
+///
+/// FIX #2: The JSON files use snake_case keys (`mod_version`, `mod_tag`,
+/// `mod_type`), which matches Serde's default behaviour — no rename needed.
+/// Previously the struct also had no rename attributes but the README example
+/// showed camelCase keys.  The actual JSON files on disk already use
+/// snake_case so this struct is correct; we just document it clearly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Mod {
     mod_version: String,
@@ -58,6 +69,7 @@ struct Mod {
     mod_type: ModTypes,
 }
 
+/// Header section of a module JSON file.
 #[derive(Debug, Deserialize, Serialize)]
 struct ModuleHeader {
     module_name: String,
@@ -65,12 +77,14 @@ struct ModuleHeader {
     module_author: String,
 }
 
+/// Root shape of a module JSON file.
 #[derive(Debug, Deserialize, Serialize)]
 struct ModuleJson {
     header: ModuleHeader,
     mods: BTreeMap<String, Mod>,
 }
 
+/// In-memory representation of a loaded module.
 #[derive(Debug)]
 struct Module {
     module_name: String,
@@ -98,6 +112,8 @@ impl std::fmt::Display for Operation {
     }
 }
 
+// ─── Scan types ───────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 struct ScanResult {
     jar_name: String,
@@ -107,6 +123,9 @@ struct ScanResult {
     module_tag: Option<DefaultTags>,
     module_type: Option<ModTypes>,
     module_version: Option<String>,
+    /// FIX #3: full_match is now true when the mod ID is in the module AND
+    /// the module version is "*" (wildcard) OR the detected version matches
+    /// the module version exactly AND the loader type matches.
     full_match: bool,
 }
 
@@ -117,19 +136,27 @@ struct ScanSummary {
     full_match_count: usize,
 }
 
+// ─── Messages ─────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 enum Message {
     RefreshModules,
     ModuleSelected(String),
     LoadModule,
     DirectoryChanged(String),
+    /// FIX #4: BrowseDirectory now returns a Task that runs the blocking rfd
+    /// dialog on a background thread via iced::task::perform, keeping the
+    /// GUI thread responsive.
     BrowseDirectory,
+    DirectoryPicked(Option<PathBuf>),
     ScanDirectory,
     TagSelected(DefaultTags),
     OperationSelected(Operation),
     OutputChanged(String),
     RunOperation,
 }
+
+// ─── App state ────────────────────────────────────────────────────────────────
 
 struct LodestoneApp {
     modules: Vec<String>,
@@ -165,6 +192,8 @@ impl Default for LodestoneApp {
     }
 }
 
+// ─── Update ───────────────────────────────────────────────────────────────────
+
 fn update(state: &mut LodestoneApp, message: Message) -> Task<Message> {
     match message {
         Message::RefreshModules => {
@@ -178,40 +207,63 @@ fn update(state: &mut LodestoneApp, message: Message) -> Task<Message> {
             }
             push_log(&mut state.log, "Module list refreshed.".to_string());
         }
+
         Message::ModuleSelected(path) => {
             state.selected_module = Some(path);
         }
+
         Message::LoadModule => {
             if let Some(path) = &state.selected_module {
                 match Module::from_file(path) {
                     Ok(module) => {
+                        push_log(
+                            &mut state.log,
+                            format!(
+                                "Loaded module: {} v{} by {}",
+                                module.module_name, module.module_version, module.module_author
+                            ),
+                        );
                         state.module = Some(module);
                         state.scan_results.clear();
                         state.summary = ScanSummary::default();
                         state.jar_to_modid.clear();
-                        push_log(&mut state.log, format!("Loaded module: {}", path));
                     }
                     Err(e) => {
                         state.module = None;
-                        push_log(&mut state.log, format!("Failed to load module {}: {}", path, e));
+                        push_log(
+                            &mut state.log,
+                            format!("Failed to load module {}: {}", path, e),
+                        );
                     }
                 }
             } else {
                 push_log(&mut state.log, "Select a module before loading.".to_string());
             }
         }
+
         Message::DirectoryChanged(value) => {
             state.directory = value;
         }
+
+        // FIX #4: spawn the blocking file-dialog on a background thread so
+        // the GUI never freezes.
         Message::BrowseDirectory => {
-            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                state.directory = folder.display().to_string();
+            return Task::perform(
+                async { rfd::AsyncFileDialog::new().pick_folder().await },
+                |handle| Message::DirectoryPicked(handle.map(|h| h.path().to_path_buf())),
+            );
+        }
+
+        Message::DirectoryPicked(maybe_path) => {
+            if let Some(path) = maybe_path {
+                state.directory = path.display().to_string();
                 push_log(
                     &mut state.log,
                     format!("Selected directory: {}", state.directory),
                 );
             }
         }
+
         Message::ScanDirectory => {
             if state.module.is_none() {
                 push_log(&mut state.log, "Load a module before scanning.".to_string());
@@ -233,11 +285,11 @@ fn update(state: &mut LodestoneApp, message: Message) -> Task<Message> {
                     push_log(
                         &mut state.log,
                         format!(
-                        "Scan complete: {} jars, {} identified, {} full matches.",
-                        state.summary.jar_count,
-                        state.summary.identified_count,
-                        state.summary.full_match_count
-                    ),
+                            "Scan complete: {} jars, {} identified, {} full matches.",
+                            state.summary.jar_count,
+                            state.summary.identified_count,
+                            state.summary.full_match_count
+                        ),
                     );
                 }
                 Err(e) => {
@@ -245,16 +297,20 @@ fn update(state: &mut LodestoneApp, message: Message) -> Task<Message> {
                 }
             }
         }
+
         Message::TagSelected(tag) => {
             state.tag = tag;
         }
+
         Message::OperationSelected(operation) => {
             state.operation = operation;
             state.output_path.clear();
         }
+
         Message::OutputChanged(value) => {
             state.output_path = value;
         }
+
         Message::RunOperation => {
             if state.module.is_none() {
                 push_log(
@@ -347,10 +403,6 @@ fn update(state: &mut LodestoneApp, message: Message) -> Task<Message> {
         }
     }
 
-    if state.log.len() > 200 {
-        state.log.drain(0..state.log.len() - 200);
-    }
-
     Task::none()
 }
 
@@ -363,6 +415,8 @@ fn push_log(log: &mut Vec<String>, entry: String) {
         log.drain(0..log.len() - 200);
     }
 }
+
+// ─── View ─────────────────────────────────────────────────────────────────────
 
 fn view(state: &LodestoneApp) -> Element<'_, Message> {
     let header = container(
@@ -413,8 +467,12 @@ fn view(state: &LodestoneApp) -> Element<'_, Message> {
                 .style(text_color(Color::from_rgb(0.5, 0.46, 0.42))),
             module_picker,
             row![
-                button(text("Refresh")).style(|theme, status| secondary_button(theme, status)).on_press(Message::RefreshModules),
-                button(text("Load")).style(|theme, status| primary_button(theme, status)).on_press(Message::LoadModule),
+                button(text("Refresh"))
+                    .style(|theme, status| secondary_button(theme, status))
+                    .on_press(Message::RefreshModules),
+                button(text("Load"))
+                    .style(|theme, status| primary_button(theme, status))
+                    .on_press(Message::LoadModule),
             ]
             .spacing(12),
             row![
@@ -496,6 +554,8 @@ fn view(state: &LodestoneApp) -> Element<'_, Message> {
         .spacing(18)
         .width(Length::FillPortion(2));
 
+    // FIX #5: distinguish "Unidentified" (not in module) from "Partial match"
+    // (in module but version/loader type mismatch).
     let result_list = if state.scan_results.is_empty() {
         container(
             column![
@@ -514,31 +574,33 @@ fn view(state: &LodestoneApp) -> Element<'_, Message> {
     } else {
         let mut list = column![].spacing(12);
         for result in &state.scan_results {
-            let status_color = if result.full_match {
-                Color::from_rgb(0.2, 0.6, 0.44)
+            let (status_label, status_color) = if result.full_match {
+                ("Full match", Color::from_rgb(0.2, 0.6, 0.44))
+            } else if result.module_tag.is_some() {
+                ("Partial match", Color::from_rgb(0.78, 0.62, 0.2))
             } else {
-                Color::from_rgb(0.78, 0.42, 0.22)
+                ("Unidentified", Color::from_rgb(0.78, 0.42, 0.22))
             };
 
             let module_tag = result
                 .module_tag
                 .map(|t| t.to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
+                .unwrap_or_else(|| "—".to_string());
 
             let module_type = result
                 .module_type
                 .map(|t| t.to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
+                .unwrap_or_else(|| "—".to_string());
 
             let module_version = result
                 .module_version
                 .clone()
-                .unwrap_or_else(|| "-".to_string());
+                .unwrap_or_else(|| "—".to_string());
 
             let detected_version = result
                 .detected_version
                 .clone()
-                .unwrap_or_else(|| "-".to_string());
+                .unwrap_or_else(|| "—".to_string());
 
             list = list.push(
                 container(
@@ -548,7 +610,7 @@ fn view(state: &LodestoneApp) -> Element<'_, Message> {
                                 .size(16)
                                 .style(text_color(Color::from_rgb(0.2, 0.18, 0.16))),
                             Space::with_width(Length::Fill),
-                            text(if result.full_match { "Full match" } else { "Partial" })
+                            text(status_label)
                                 .size(12)
                                 .style(text_color(status_color)),
                         ]
@@ -632,6 +694,8 @@ fn view(state: &LodestoneApp) -> Element<'_, Message> {
         .into()
 }
 
+// ─── Entry point ──────────────────────────────────────────────────────────────
+
 fn main() -> iced::Result {
     iced::application("Lodestone", update, view)
         .theme(|_| Theme::Light)
@@ -647,6 +711,8 @@ fn main() -> iced::Result {
         })
         .run_with(|| (LodestoneApp::default(), Task::none()))
 }
+
+// ─── Module loading ───────────────────────────────────────────────────────────
 
 impl Module {
     fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -665,18 +731,48 @@ impl Module {
     }
 }
 
+// FIX #6: resolve module paths relative to the executable rather than the
+// working directory, so the app works regardless of where it's launched from.
+fn exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn load_module_list() -> Vec<String> {
+    let base = exe_dir();
     let mut modules = Vec::new();
-    if Path::new("test.json").exists() {
-        modules.push("test.json".to_string());
+
+    // Look for test.json next to the binary first (dev convenience).
+    let test_path = base.join("test.json");
+    if test_path.exists() {
+        modules.push(test_path.display().to_string());
     }
 
-    if let Ok(entries) = fs::read_dir("modules") {
+    // Then scan the modules/ sub-directory next to the binary.
+    let modules_dir = base.join("modules");
+    if let Ok(entries) = fs::read_dir(&modules_dir) {
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Some(fname) = path.file_name().and_then(|s| s.to_str()) {
-                    modules.push(format!("modules/{}", fname));
+                modules.push(path.display().to_string());
+            }
+        }
+    }
+
+    // Fallback: also try CWD-relative paths so `cargo run` still works.
+    if modules.is_empty() {
+        if Path::new("test.json").exists() {
+            modules.push("test.json".to_string());
+        }
+        if let Ok(entries) = fs::read_dir("modules") {
+            for entry in entries.filter_map(Result::ok) {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Some(fname) = path.file_name().and_then(|s| s.to_str()) {
+                        modules.push(format!("modules/{}", fname));
+                    }
                 }
             }
         }
@@ -689,6 +785,8 @@ fn load_module_list() -> Vec<String> {
     modules
 }
 
+// ─── Scanning ─────────────────────────────────────────────────────────────────
+
 fn scan_directory(
     directory: &str,
     module: &Module,
@@ -699,43 +797,81 @@ fn scan_directory(
 
     for jar_name in jar_list.iter() {
         let path = format!("{}/{}", directory, jar_name);
-        if let Some((mod_id, detected_type, detected_version)) = get_mod_id_and_type(&path)? {
-            jar_to_modid.insert(jar_name.clone(), mod_id.clone());
 
-            let (module_tag, module_type, module_version, full_match) = if let Some(mod_entry) =
-                module.mods.get(&mod_id)
-            {
-                let module_version = mod_entry.mod_version.clone();
-                let full_match = detected_version
-                    .as_ref()
-                    .map(|v| v == &module_version && detected_type == mod_entry.mod_type)
-                    .unwrap_or(false);
-                (
-                    Some(mod_entry.mod_tag),
-                    Some(mod_entry.mod_type),
-                    Some(module_version),
+        match get_mod_id_and_type(&path) {
+            Ok(Some((mod_id, detected_type, detected_version))) => {
+                jar_to_modid.insert(jar_name.clone(), mod_id.clone());
+
+                // FIX #3: wildcard version "*" counts as a full match on the
+                // version axis; only the loader type still needs to match.
+                let (module_tag, module_type, module_version, full_match) =
+                    if let Some(mod_entry) = module.mods.get(&mod_id) {
+                        let mv = mod_entry.mod_version.clone();
+                        let version_matches = mv == "*"
+                            || detected_version
+                                .as_deref()
+                                .map(|v| v == mv)
+                                .unwrap_or(false);
+                        let type_matches = detected_type == mod_entry.mod_type;
+                        let full_match = version_matches && type_matches;
+                        (
+                            Some(mod_entry.mod_tag),
+                            Some(mod_entry.mod_type),
+                            Some(mv),
+                            full_match,
+                        )
+                    } else {
+                        (None, None, None, false)
+                    };
+
+                scan_results.push(ScanResult {
+                    jar_name: jar_name.clone(),
+                    mod_id,
+                    detected_type,
+                    detected_version,
+                    module_tag,
+                    module_type,
+                    module_version,
                     full_match,
-                )
-            } else {
-                (None, None, None, false)
-            };
-
-            scan_results.push(ScanResult {
-                jar_name: jar_name.clone(),
-                mod_id,
-                detected_type,
-                detected_version,
-                module_tag,
-                module_type,
-                module_version,
-                full_match,
-            });
+                });
+            }
+            Ok(None) => {
+                // Jar recognised as a zip but no mod manifest found — still
+                // record it so the user can see it in the results.
+                scan_results.push(ScanResult {
+                    jar_name: jar_name.clone(),
+                    mod_id: "(no manifest)".to_string(),
+                    detected_type: ModTypes::Unknown,
+                    detected_version: None,
+                    module_tag: None,
+                    module_type: None,
+                    module_version: None,
+                    full_match: false,
+                });
+            }
+            Err(e) => {
+                // Corrupted / non-zip jar — report and continue rather than
+                // aborting the whole scan.
+                scan_results.push(ScanResult {
+                    jar_name: jar_name.clone(),
+                    mod_id: format!("(error: {})", e),
+                    detected_type: ModTypes::Unknown,
+                    detected_version: None,
+                    module_tag: None,
+                    module_type: None,
+                    module_version: None,
+                    full_match: false,
+                });
+            }
         }
     }
 
     let summary = ScanSummary {
         jar_count: jar_list.len(),
-        identified_count: scan_results.len(),
+        identified_count: scan_results
+            .iter()
+            .filter(|r| r.module_tag.is_some())
+            .count(),
         full_match_count: scan_results.iter().filter(|r| r.full_match).count(),
     };
 
@@ -756,9 +892,12 @@ fn get_jar_files(dir_path: &str) -> Result<Vec<String>, Box<dyn std::error::Erro
         }
     }
 
+    jar_files.sort();
     Ok(jar_files)
 }
 
+// FIX #7: Quilt mods ship a `quilt.mod.json`; detect that in addition to the
+// existing Forge/NeoForge/Fabric/legacy-Forge manifests.
 fn get_mod_id_and_type(
     path: &str,
 ) -> Result<Option<(String, ModTypes, Option<String>)>, Box<dyn std::error::Error>> {
@@ -789,12 +928,12 @@ fn get_mod_id_and_type(
     let mut archive = zip::ZipArchive::new(file)?;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let name = file.name();
+        let mut entry = archive.by_index(i)?;
+        let name = entry.name().to_string();
 
         if name.ends_with("mods.toml") {
             let mut contents = String::new();
-            file.read_to_string(&mut contents)?;
+            entry.read_to_string(&mut contents)?;
             let lower = contents.to_lowercase();
             let found_type = if lower.contains("neoforge") || lower.contains("neo-forge") {
                 ModTypes::NeoForge
@@ -806,19 +945,19 @@ fn get_mod_id_and_type(
                 .get("mods")
                 .and_then(|v| v.as_array())
                 .and_then(|arr| arr.first())
-                .and_then(|mod_entry| mod_entry.get("modId"))
+                .and_then(|m| m.get("modId"))
                 .and_then(|id| id.as_str())
                 .map(String::from);
             let detected_version = parsed
                 .get("mods")
                 .and_then(|v| v.as_array())
                 .and_then(|arr| arr.first())
-                .and_then(|mod_entry| mod_entry.get("version").or_else(|| mod_entry.get("modVersion")))
+                .and_then(|m| m.get("version").or_else(|| m.get("modVersion")))
                 .and_then(parse_toml_version);
             return Ok(mod_id.map(|id| (id, found_type, detected_version)));
         } else if name.ends_with("fabric.mod.json") {
             let mut contents = String::new();
-            file.read_to_string(&mut contents)?;
+            entry.read_to_string(&mut contents)?;
             let parsed: serde_json::Value = serde_json::from_str(&contents)?;
             let mod_id = parsed
                 .get("id")
@@ -826,20 +965,35 @@ fn get_mod_id_and_type(
                 .map(String::from);
             let detected_version = parsed.get("version").and_then(parse_json_version);
             return Ok(mod_id.map(|id| (id, ModTypes::Fabric, detected_version)));
+        } else if name.ends_with("quilt.mod.json") {
+            // FIX #7: Quilt manifest
+            let mut contents = String::new();
+            entry.read_to_string(&mut contents)?;
+            let parsed: serde_json::Value = serde_json::from_str(&contents)?;
+            // Quilt uses `quilt_loader.id` and `quilt_loader.version`
+            let loader = parsed.get("quilt_loader");
+            let mod_id = loader
+                .and_then(|l| l.get("id"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let detected_version = loader
+                .and_then(|l| l.get("version"))
+                .and_then(parse_json_version);
+            return Ok(mod_id.map(|id| (id, ModTypes::Quilt, detected_version)));
         } else if name.ends_with("mcmod.info") {
             let mut contents = String::new();
-            file.read_to_string(&mut contents)?;
+            entry.read_to_string(&mut contents)?;
             let parsed: serde_json::Value = serde_json::from_str(&contents)?;
             let mod_id = parsed
                 .as_array()
                 .and_then(|arr| arr.first())
-                .and_then(|mod_entry| mod_entry.get("modid"))
+                .and_then(|m| m.get("modid"))
                 .and_then(|id| id.as_str())
                 .map(String::from);
             let detected_version = parsed
                 .as_array()
                 .and_then(|arr| arr.first())
-                .and_then(|mod_entry| mod_entry.get("version"))
+                .and_then(|m| m.get("version"))
                 .and_then(parse_json_version);
             return Ok(mod_id.map(|id| (id, ModTypes::Forge, detected_version)));
         }
@@ -847,6 +1001,8 @@ fn get_mod_id_and_type(
 
     Ok(None)
 }
+
+// ─── Operations ───────────────────────────────────────────────────────────────
 
 fn zip_files_with_tag(
     dir: &str,
@@ -859,6 +1015,7 @@ fn zip_files_with_tag(
 
     let out_file = fs::File::create(output_zip)?;
     let mut zip = zip::ZipWriter::new(out_file);
+    let options = FileOptions::default();
     let mut count = 0usize;
     for (jar, modid) in jar_to_modid {
         if let Some(mod_entry) = module.mods.get(modid) {
@@ -868,7 +1025,7 @@ fn zip_files_with_tag(
                     let mut f = fs::File::open(&path)?;
                     let mut buffer = Vec::new();
                     f.read_to_end(&mut buffer)?;
-                    zip.start_file(jar, FileOptions::default())?;
+                    zip.start_file(jar, options)?;
                     zip.write_all(&buffer)?;
                     count += 1;
                 }
@@ -953,6 +1110,8 @@ fn move_files_with_tag(
     Ok(count)
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 fn background_style() -> container::Style {
     container::Style {
         background: Some(Color::from_rgb(0.98, 0.965, 0.94).into()),
@@ -1025,9 +1184,7 @@ fn pill_style() -> container::Style {
 }
 
 fn text_color(color: Color) -> impl Fn(&Theme) -> iced::widget::text::Style {
-    move |_| iced::widget::text::Style {
-        color: Some(color),
-    }
+    move |_| iced::widget::text::Style { color: Some(color) }
 }
 
 fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
@@ -1046,7 +1203,6 @@ fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
         },
         ..Default::default()
     };
-
     match status {
         button::Status::Hovered => button::Style {
             background: Some(Color::from_rgb(0.84, 0.56, 0.34).into()),
@@ -1081,7 +1237,6 @@ fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
         },
         ..Default::default()
     };
-
     match status {
         button::Status::Hovered => button::Style {
             background: Some(Color::from_rgb(0.96, 0.92, 0.88).into()),
@@ -1116,7 +1271,6 @@ fn danger_button(_theme: &Theme, status: button::Status) -> button::Style {
         },
         ..Default::default()
     };
-
     match status {
         button::Status::Hovered => button::Style {
             background: Some(Color::from_rgb(0.88, 0.44, 0.36).into()),
