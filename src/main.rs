@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+mod bytecode;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -162,6 +164,11 @@ pub struct ScanResult {
     pub parse_error:  Option<String>,
     pub module_entry: Option<ModuleEntry>,
     pub match_quality:MatchQuality,
+    /// Side inferred purely from bytecode analysis (no module required)
+    pub bytecode_side: Option<crate::bytecode::DetectedSide>,
+    pub bytecode_confidence: crate::bytecode::Confidence,
+    /// A representative signal string shown in the UI tooltip
+    pub bytecode_signal: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,10 +197,31 @@ impl ScanResult {
         }
     }
     fn effective_side(&self) -> Side {
-        self.module_entry
-            .as_ref().map(|e| e.mod_tag)
-            .or_else(|| self.jar_info.as_ref().and_then(|i| i.declared_side))
-            .unwrap_or(Side::Unknown)
+        // Priority: module entry > manifest declared side > bytecode detection
+        if let Some(s) = self.module_entry.as_ref().map(|e| e.mod_tag) {
+            return s;
+        }
+        if let Some(s) = self.jar_info.as_ref().and_then(|i| i.declared_side) {
+            return s;
+        }
+        // Fall back to bytecode evidence
+        match &self.bytecode_side {
+            Some(crate::bytecode::DetectedSide::Client) => Side::Client,
+            Some(crate::bytecode::DetectedSide::Server) => Side::Server,
+            Some(crate::bytecode::DetectedSide::Both)   => Side::Both,
+            _ => Side::Unknown,
+        }
+    }
+
+    /// Human-readable source of the side determination
+    fn side_source(&self) -> &'static str {
+        if self.module_entry.is_some() { return "module"; }
+        if self.jar_info.as_ref().and_then(|i| i.declared_side).is_some() { return "manifest"; }
+        match self.bytecode_confidence {
+            crate::bytecode::Confidence::Annotation     => "annotation",
+            crate::bytecode::Confidence::ClassReference => "bytecode",
+            crate::bytecode::Confidence::None           => "—",
+        }
     }
 }
 
@@ -304,10 +332,14 @@ fn scan_directory(dir: &str, module: &Module) -> (Vec<ScanResult>, ScanSummary) 
     let mut results = Vec::new();
     for jar_name in jars {
         let path = format!("{}/{}", dir.trim_end_matches('/'), jar_name);
+
         let (jar_info, parse_error) = match parse_jar(&path) {
             Ok(i)  => (i, None),
             Err(e) => (None, Some(e.to_string())),
         };
+
+        // Bytecode analysis — runs regardless of whether a module is loaded
+        let bc = bytecode::analyse_jar(&path).unwrap_or_else(bytecode::BytecodeEvidence::unknown);
 
         let (module_entry, match_quality) = if let Some(info) = &jar_info {
             if let Some(entry) = module.mods.get(&info.mod_id).cloned() {
@@ -323,7 +355,12 @@ fn scan_directory(dir: &str, module: &Module) -> (Vec<ScanResult>, ScanSummary) 
             (None, MatchQuality::Unknown)
         };
 
-        results.push(ScanResult { jar_name, jar_info, parse_error, module_entry, match_quality });
+        results.push(ScanResult {
+            jar_name, jar_info, parse_error, module_entry, match_quality,
+            bytecode_side:       Some(bc.side),
+            bytecode_confidence: bc.confidence,
+            bytecode_signal:     bc.signal,
+        });
     }
 
     let summary = ScanSummary {
@@ -991,6 +1028,7 @@ fn view_scan(app: &App) -> Element<'_, Msg> {
                 text("Loader").size(10).style(tc(pal::FAINT)).width(Length::FillPortion(2)),
                 text("Version").size(10).style(tc(pal::FAINT)).width(Length::FillPortion(2)),
                 text("Side").size(10).style(tc(pal::FAINT)).width(Length::FillPortion(2)),
+                text("Source").size(10).style(tc(pal::FAINT)).width(Length::FillPortion(2)),
                 text("Match").size(10).style(tc(pal::FAINT)).width(Length::FillPortion(2)),
             ]
             .spacing(10),
@@ -1034,6 +1072,15 @@ fn view_scan(app: &App) -> Element<'_, Msg> {
                 0.0.into()
             };
 
+            let source = r.side_source();
+            let source_color = match source {
+                "module"      => pal::INK,
+                "manifest"    => pal::ACCENT,
+                "annotation"  => pal::GREEN,
+                "bytecode"    => pal::PURPLE,
+                _             => pal::FAINT,
+            };
+
             rows.push(
                 container(
                     row![
@@ -1046,6 +1093,8 @@ fn view_scan(app: &App) -> Element<'_, Msg> {
                         text(version).size(12).style(tc(pal::MUTED))
                             .width(Length::FillPortion(2)),
                         text(side.to_string()).size(12).style(tc(side_color))
+                            .width(Length::FillPortion(2)),
+                        text(source).size(12).style(tc(source_color))
                             .width(Length::FillPortion(2)),
                         text(r.status_label()).size(12).style(tc(r.status_color()))
                             .width(Length::FillPortion(2)),
