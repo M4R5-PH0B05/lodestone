@@ -1118,7 +1118,7 @@ fn view_scan(app: &App) -> Element<'_, Msg> {
 
         column![
             tbl_header,
-            scrollable(column(rows).spacing(0)).height(Length::Fill),
+            column(rows).spacing(0),
         ]
         .spacing(0)
         .into()
@@ -1130,15 +1130,13 @@ fn view_scan(app: &App) -> Element<'_, Msg> {
         results_body,
     ]
     .spacing(0)
-    .width(Length::Fill)
-    .height(Length::Fill);
+    .width(Length::Fill);
 
     row![
         left_col,
         Space::with_width(20),
         right_col,
     ]
-    .height(Length::Fill)
     .into()
 }
 
